@@ -23,7 +23,8 @@
 
 #define DBADDR "127.0.0.1"
 
-char* handle_request(char*);
+void handle_request(char*, int);
+void send_response(int, char*, int);
 
 int main(int argc, char *argv[])
 {
@@ -36,7 +37,7 @@ int main(int argc, char *argv[])
     char *not_imp_msg = "HTTP/1.0 501 NotImplemented \r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>";
     char request[1000];
 	char response[1000];
-    int sockfd, new_fd, received, bytes;
+    int sockfd, new_fd, received, bytes, response_len, sent;
 	struct sockaddr_in my_addr;
 	struct sockaddr_in their_addr; /* client's address info */
 	int sin_size;
@@ -64,7 +65,6 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 	
-	printf("Server listening on port %d\n", SERVPORT);
 	while(1) {
 		sin_size = sizeof(struct sockaddr_in);
 		if ((new_fd = accept(sockfd,
@@ -73,51 +73,104 @@ int main(int argc, char *argv[])
 			continue;
 		}
         received = 0;
+		memset(request, 0, sizeof(request));
         do {
             bytes = recv(new_fd, request+received, 1, MSG_WAITALL);
-            if (bytes < 0)
+            if (bytes < 0) {
                 perror("ERROR reading request from socket");
-            if (bytes == 0)
+			}
+            if (bytes == 0) {
                 break;
-            if (strstr(request, "\r\n\r\n"))
-                break;
+			}
+			if (strstr(request, "\r\n\r\n")) {
+				break;
+			}
             received += bytes;
         } while(1);
+		fprintf(stdout, "%s \"", inet_ntoa(their_addr.sin_addr));
 		token = strtok(request, "\r\n");
-		fprintf(stdout, "%s", token);
-		strcpy(response, handle_request(request));
+		fprintf(stdout, "%s\" ", token);
+		handle_request(request, new_fd);
         close(new_fd);
     }
 
 	close(sockfd);
-
-    return 0;
+	return 0;
 }
 
-char* handle_request(char *request){
+void handle_request(char *request, int fd) {
+	int bytes, total_sent, sent,response_len, url_len;
 	char* response;
 	char* url;
+	char buf[4096]; 
+	char filepath[512] = "Webpage";
+	char *not_found = "HTTP/1.0 404 Not Found\r\n\r\n<html><body><h1>404 Not Found</h1></body></html>";
 	char *not_implemented = "HTTP/1.0 501 Not Implemented\r\n\r\n<html><body><h1>501 Not Implemented</h1></body></html>";
 	char *bad_request = "HTTP/1.0 400 Bad Request\r\n\r\n<html><body><h1>400 Bad Request</h1></body></html>";
-	fprintf(stdout, "Received request: \n%s\n", request);
+	
 
-	if (!strstr(request, "HTTP/1.0") || !strstr(request, "HTTP/1.1"))
-		return not_implemented;
+	if (!(strstr(request, "HTTP/1.0") || strstr(request, "HTTP/1.1"))) {
+		fprintf(stdout, "501 Not Implemented\r\n");
+		send_response(fd, not_implemented, strlen(not_implemented));
+	}
 
 	if (strstr(request, "GET")) {
 		url = strstr(request, "GET") + 4;
-		if (strncmp("/", url, 1))
-			return bad_request;
-		if (strstr(url, ".."))
-			return bad_request;
-		if (strrchr(url, '/')) {
+		url = strtok(url, " ");
+		url_len = strlen(url);
+		if (strncmp("/", url, 1) != 0) {
+			fprintf(stdout, "400 Bad Request\r\n");
+			send_response(fd, bad_request, strlen(bad_request));
+		}
+		if (strstr(url, "/..")) {
+			fprintf(stdout, "400 Bad Request\r\n");
+			send_response(fd, bad_request, strlen(bad_request));
+		}
 
+		if (strcmp(url+url_len-1, "/") == 0) {
+			strcat(url, "index.html");
 		}
 		
-		char* response = "HTTP/1.0 200 OK\r\n\r\n<html><body><h1>This is a valid get request</h1></body></html>";
-		
-		return response;
+		char* response = "HTTP/1.0 200 OK\r\n\r\n";
+		strcat(filepath, url);
+		FILE* fptr;
+		fptr = fopen(filepath, "rb");
+
+		if (fptr == NULL) {
+			fprintf(stdout, "404 Not Found \r\n");
+			send_response(fd, not_found, strlen(not_found));
+			return;
+		}
+		fprintf(stdout, "200 OK\r\n");
+		send_response(fd, response, strlen(response));
+
+		do {
+			bytes = fread(buf, 1, sizeof(buf), fptr);
+			if (bytes < 0) {
+				perror("Error reading data from file");
+				exit(1);
+			}
+			if (bytes == 0) {
+				break;
+			}
+
+			send_response(fd, buf, bytes);
+			memset(buf, 0, sizeof(buf));
+		} while(1);
+		fclose(fptr);
 	}
-	else
-		return not_implemented;
+}
+
+void send_response(int fd, char* response, int response_len) {
+	int sent = 0;
+	int bytes;
+
+	do {
+		bytes = write(fd, response + sent, response_len - sent);
+		if (bytes < 0)
+			perror("ERROR writing response to socket");
+		if (bytes == 0)
+			break;
+		sent += bytes;
+	} while (1);
 }
